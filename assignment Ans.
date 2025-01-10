@@ -1,0 +1,142 @@
+ #1-->>Install and Setup YOLOv5
+
+
+!pip install -U ultralytics
+!pip install tqdm matplotlib
+
+from ultralytics import YOLO
+import cv2
+import json
+import os
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+# Check GPU availability
+import torch
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Running on: {device}")
+
+
+ # 2.-->> Load YOLOv5 Model
+
+model = YOLO("yolov5s.pt")    
+
+#3.-->> Define Detection and JSON Output Functions
+
+def detect_objects(frame, parent_classes, sub_classes):
+    """
+    Detect objects and their sub-objects in a frame.
+    """
+    results = model.predict(frame, device=device, conf=0.5)
+    detections = results[0].boxes.data.cpu().numpy()    
+
+    parent_objects = []
+    sub_objects = []
+
+    for detection in detections:
+        x1, y1, x2, y2, confidence, class_id = detection
+        class_id = int(class_id)
+        bbox = [int(x1), int(y1), int(x2), int(y2)]
+        class_name = model.names[class_id]
+
+        # Classify as parent or sub-object
+        if class_name in parent_classes:
+            parent_objects.append({"object": class_name, "bbox": bbox, "confidence": confidence})
+        elif class_name in sub_classes:
+            sub_objects.append({"object": class_name, "bbox": bbox, "confidence": confidence})
+
+    return parent_objects, sub_objects
+
+
+def create_hierarchy(parent_objects, sub_objects):
+    """
+    Associate sub-objects with parent objects and return the hierarchical JSON output.
+    """
+    hierarchy = []
+    for idx, parent in enumerate(parent_objects):
+        parent_bbox = parent["bbox"]
+        sub_objects_associated = [
+            {
+                "object": sub["object"],
+                "id": i,
+                "bbox": sub["bbox"]
+            }
+            for i, sub in enumerate(sub_objects)
+            if is_inside_bbox(sub["bbox"], parent_bbox)
+        ]
+        hierarchy.append({
+            "object": parent["object"],
+            "id": idx,
+            "bbox": parent_bbox,
+            "subobject": sub_objects_associated
+        })
+    return hierarchy
+
+
+def is_inside_bbox(inner_bbox, outer_bbox):
+    """
+    Check if inner_bbox is fully inside outer_bbox.
+    """
+    x1, y1, x2, y2 = inner_bbox
+    x1o, y1o, x2o, y2o = outer_bbox
+    return x1 >= x1o and y1 >= y1o and x2 <= x2o and y2 <= y2o
+
+
+#-->>4. Process Video and Generate JSON Outputs
+
+def process_video(video_path, output_path, parent_classes, sub_classes):
+    """
+    Process the video to detect objects, associate sub-objects, and save JSON results.
+    """
+    cap = cv2.VideoCapture(video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    json_results = []
+    print("Processing video...")
+
+    for i in tqdm(range(frame_count)):
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+
+        parent_objects, sub_objects = detect_objects(frame, parent_classes, sub_classes)
+
+        hierarchy = create_hierarchy(parent_objects, sub_objects)
+        json_results.append(hierarchy)
+
+    cap.release()
+
+    # Save JSON output
+    with open(output_path, "w") as f:
+        json.dump(json_results, f, indent=4)
+
+    print(f"Detection results saved to: {output_path}")
+
+
+#-->>5. Sub-Object Image Retrieval
+
+def retrieve_sub_object(frame, bbox, save_path):
+    """
+    Crop and save a sub-object image based on its bounding box.
+    """
+    x1, y1, x2, y2 = bbox
+    cropped_image = frame[y1:y2, x1:x2]
+    cv2.imwrite(save_path, cropped_image)
+    print(f"Sub-object image saved at: {save_path}")
+
+
+#-->>6. Run the System
+
+video_path = "/content/cameramanvideo.mp4"  # Replace with your uploaded video
+output_json = "output_results.json"
+parent_classes = ["person", "car"]
+sub_classes = ["helmet", "tire"]
+
+# Process video and generate JSON
+process_video(video_path, output_json, parent_classes, sub_classes)
+
+
